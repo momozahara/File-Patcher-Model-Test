@@ -1,6 +1,10 @@
+use data_encoding::HEXUPPER;
 use reqwest::header::{ACCEPT, USER_AGENT};
+use ring::digest::{Context, Digest, SHA256};
 use serde::{Deserialize, Serialize};
 use serde_json::from_str;
+use std::fs::File;
+use std::io::{BufReader, Read};
 use std::{fs, io, path::Path};
 
 static RAW_PATH: &str = "./Kubernetes.Object.Generator.msi";
@@ -17,7 +21,7 @@ struct Asset {
     browser_download_url: String,
 }
 
-fn main() -> Result<(), io::Error> {
+fn main() -> io::Result<()> {
     let file_path = Path::new(RAW_PATH);
 
     let response = get_latest().unwrap();
@@ -48,15 +52,18 @@ fn main() -> Result<(), io::Error> {
         }
     }
 
-    let hash = get_hash(file_path).unwrap();
+    let input = File::open(&file_path).unwrap();
+    let reader = BufReader::new(input);
+    let digest = sha256_digest(reader).unwrap();
+    let hash = HEXUPPER.encode(digest.as_ref()).to_lowercase();
 
     if !hash.eq(&latest_hash) {
         println!("Hash Mismatch!");
-        fs::remove_file(RAW_PATH).unwrap();
+        fs::remove_file(RAW_PATH)?;
         let mut iter = data.assets.iter();
         if let Some(asset) = iter.next() {
             if asset.name.contains("Kubernetes.Object.Generator") && asset.name.contains("msi") {
-                download(&asset.browser_download_url).unwrap();
+                download(&asset.browser_download_url)?;
             }
         }
     } else {
@@ -66,7 +73,7 @@ fn main() -> Result<(), io::Error> {
     Ok(())
 }
 
-fn get_latest() -> Result<reqwest::blocking::Response, io::Error> {
+fn get_latest() -> io::Result<reqwest::blocking::Response> {
     let client = reqwest::blocking::Client::new();
     let request = client
         .get("https://api.github.com/repos/momozahara/kubernetes-object-generator/releases/latest")
@@ -83,13 +90,24 @@ fn download(url: &str) -> io::Result<()> {
 
     let mut response = reqwest::blocking::get(url).unwrap();
 
-    let mut file = fs::File::create(RAW_PATH).unwrap();
-    io::copy(&mut response, &mut file).unwrap();
+    let mut file = fs::File::create(RAW_PATH)?;
+    io::copy(&mut response, &mut file)?;
 
     Ok(())
 }
 
-fn get_hash(file_path: &Path) -> Result<String, io::Error> {
-    let hash = sha256::try_digest(file_path).unwrap();
-    Ok(hash)
+/// source: https://rust-lang-nursery.github.io/rust-cookbook/cryptography/hashing.html#calculate-the-sha-256-digest-of-a-file
+fn sha256_digest<R: Read>(mut reader: R) -> io::Result<Digest> {
+    let mut context = Context::new(&SHA256);
+    let mut buffer = [0; 1024];
+
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        context.update(&buffer[..count]);
+    }
+
+    Ok(context.finish())
 }
